@@ -225,6 +225,16 @@ def partition_G(nodelist, Y):
     -------
     clusters : dict
         Cluster 0...k-1 as keys, as set of nodes in G in cluster i = 0,..,k-1 as values.
+    
+    Notes:
+    ------
+    Using kmeans algorthm to cluster groups. See [1] for more information.
+
+    References
+    ----------
+    .. [1] Marina Meila and Jianbo Shi.
+           *A Random Walks View of Spectral Segmentation*.
+           <https://sites.cs.ucsb.edu/~veronika/MAE/arandomwalksviewofimgsegmt_meila_shi_nips00.pdf>
 
     """
     k = len(Y[0])
