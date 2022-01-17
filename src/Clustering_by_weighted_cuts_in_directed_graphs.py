@@ -1,6 +1,8 @@
 import networkx as nx
 import scipy.linalg
 import numpy as np
+from sklearn import preprocessing
+from sklearn.cluster import KMeans
 from numpy import linalg
 
 def asym_weight_matrix(G, nodelist = None, data = None):
@@ -34,7 +36,7 @@ def asym_weight_matrix(G, nodelist = None, data = None):
 
     """
     if nodelist == None:
-        nodelist = G.nodes()
+        nodelist = list(G.nodes())
 
     if data != None:   
         weight = nx.get_edge_attributes(G, data)
@@ -87,7 +89,7 @@ def asym_weighted_degree_matrix(G, nodelist = None, data = None):
 
     """
     if nodelist == None:
-        nodelist = G.nodes()
+        nodelist = list(G.nodes())
 
     if data != None:   
         weight = nx.get_edge_attributes(G, data)
@@ -144,12 +146,10 @@ def Hermitian_normalized_Laplacian(D, W, T):
     """
     H = 2*D-W-W.transpose()
     T1 = scipy.linalg.fractional_matrix_power(T, -1/2)
-    lmL = np.dot(T1,H)
-    rmL = np.dot(lmL,T1)
-    L = (1/2)*rmL
+    L = (1/2)*np.dot(np.dot(T1,H),T1)
     return L
 
-def k_smallest_eigvec(nodelist, L, T, k):
+def k_smallest_eigvec(nodelist, L, k):
     """Returns the k smallest eigenvectors of the Hermitian part of the normalised
      Laplacian nL. 
 
@@ -171,12 +171,13 @@ def k_smallest_eigvec(nodelist, L, T, k):
     Returns
     -------
     array
-        Matrix X = T^(-1/2)Y, where Y has k smallest eigenvectors of nL as a column vectors.
+        Matrix Y, where Y has k smallest eigenvectors of nL as a column vectors.
 
     Notes:
     ------
     The columns of Y are automatically orthogonal, since nL is real-valued, 
-    symmetric matric.  
+    symmetric matric. Using the Variant to the BestWCut algorthm, so Y is 
+    normalized to have rows of length 1. Using L2 norm.  
 
     References
     ----------
@@ -191,7 +192,6 @@ def k_smallest_eigvec(nodelist, L, T, k):
     """
     nlen = len(nodelist)
     eigval, eigvec = linalg.eig(L)
-    T1 = scipy.linalg.fractional_matrix_power(T, -1/2)
     
     Y = np.full((nlen, k), np.nan, order=None)
 
@@ -207,11 +207,10 @@ def k_smallest_eigvec(nodelist, L, T, k):
                 Y[:,y] = eigvec[:,i]/n
                 break
  
-    X = np.dot(T1,Y)
-    return X
+    return preprocessing.normalize(Y, norm="l2")
 
-def partition_G(nodelist, second_smallest_eigval_vec):
-    """Returns a partition of the graph G basied on second smallest eigenvector
+def partition_G(nodelist, Y):
+    """Returns a partition of the graph G basied on k smallest eigenvectors
     of the Hermitian part of normalized Laplacian matrix nL.
 
     Parameters
@@ -219,28 +218,84 @@ def partition_G(nodelist, second_smallest_eigval_vec):
     nodelist : collection
         A collection of nodes in `G`. 
     
-    second_smallest_eigval_vec : array 
-        Second smallest eigenvector of nL, see k_smallest_eigvec.
+    Y : array 
+        k smallest eigenvectors of nL as columns of Y, see k_smallest_eigvec.
 
     Returns
     -------
-    A : list
-        set of nodes in G in cluster 1.
-    B : list
-        set of nodes in G in cluster 2.
+    clusters : dict
+        Cluster 0...k-1 as keys, as set of nodes in G in cluster i = 0,..,k-1 as values.
 
     """
-    A = []
-    B = []
-    for i in range(len(nodelist)):
-        if second_smallest_eigval_vec[i] > 0:
-                    A.append(nodelist[i])
-        if second_smallest_eigval_vec[i] < 0:
-            B.append(nodelist[i])
+    k = len(Y[0])
+    kmeans = KMeans(n_clusters=k)
+    pred_y = kmeans.fit_predict(Y)
 
-    return A, B
+    clusters = {}
+    for i in range(len(pred_y)):
+        if pred_y[i] not in clusters:
+            clusters[pred_y[i]] = [nodelist[i]]
+        else:
+            clusters[pred_y[i]] += [nodelist[i]]
 
-def asym_optimized_normalized_cut(G, nodelist = None, data = None, return_partition = True):
+    return clusters
+
+def indicator_vector(nodelist, cluster_list):
+    nlen = len(nodelist)
+    mlen = len(cluster_list)
+
+    X = np.full((nlen, mlen), np.nan, order=None)
+
+    for i in range(len(cluster_list)):
+        Ci = [1  if n in cluster_list[i] else 0 for n in nodelist ]
+        X[:,i] = Ci
+
+    X = np.asarray(X, dtype=None)
+    return X
+
+def WCut(D, W, T, X):
+    """Returns weighted cut of graph partition into clusters C = {C1,...,Ck} [1].
+
+    Parameters
+    ----------
+    D : array
+        Out-Degree diagonal matrix, see asym_weighted_degree_matrix.
+
+    W : array
+        Weight matrix, see asym_weighted_degree_matrix.
+    
+    T : array
+        User defined weighting of the nodes. For WNcut introduced in [1], use T = D.
+
+    X : array
+        The indicator vector of a cluster C = {C1,...,Ck} where the ith column of X represents
+        the cluster Ci. Expects X[i][j] if jth node is in cluster Ci and 0 otherwise.
+
+    Returns
+    -------
+    number
+        Returns weighted cut WCut(C) of cluster C = {C1,...,Ck} as introduced in [1].
+
+    References
+    ----------
+    .. [1] Marina Meila and William Pentney.
+           *Clustering by weighted cuts in directed graphs*.
+           <https://sites.stat.washington.edu/mmp/Papers/sdm-wcuts.pdf>
+
+    """   
+    A = D-W
+    
+    cut = 0
+    for i in range(len(X[0])):
+
+        top = np.dot(X[:,i].transpose(), np.dot(A, X[:,i]))
+        bottom = np.dot(X[:,i].transpose(), np.dot(T, X[:,i]))
+
+        cut += top/bottom
+    
+    return cut
+
+def asym_optimized_normalized_cut(G, k, nodelist = None, data = None, return_clusters = True):
     """Returns second smallest eigenvector of the Hermitian part of normalized 
     Laplacian matrix nL. If specified, also return the partition of the graph G 
     based on second smallest eigenvector.
@@ -256,25 +311,32 @@ def asym_optimized_normalized_cut(G, nodelist = None, data = None, return_partit
     data : object
         Edge attribute key to use as weight. If not specified, D(i) represents the 
         total number of out edges from node i.    
+
+    k : int
+        Number of desired clusters.
     
     Returns
     -------
-    X[:,1] : array
-        second smallest eigenvector of nL
-    A : list
-        set of nodes in G in cluster 1.
-    B : list
-        set of nodes in G in cluster 2.
+    Y : array
+        k smallest eigenvectors of nL.
+    
+    cut : number
+        Optimied weighted cut (WCut) of clusters.
+
+    clusters : dict
+        Cluster 0...k-1 as keys, as set of nodes in G in cluster i = 0,..,k-1 as values.
+        Only returned is return_clusters = True
 
     """
     if nodelist == None:
-        nodelist = G.nodes()
+        nodelist = list(G.nodes())
     W = asym_weight_matrix(G, nodelist, data)
     D = asym_weighted_degree_matrix(G, nodelist, data)
     L = Hermitian_normalized_Laplacian(D, W, D)
-    X = k_smallest_eigvec(nodelist, L, D, 2)
+    Y = k_smallest_eigvec(nodelist, L, k)
 
-    if return_partition == True:
-        A, B  = partition_G(nodelist, X[:,1])
-
-    return (X[:,1], A, B) if return_partition == True else X[:,1]
+    clusters = partition_G(nodelist, Y)
+    cluster_list = list(clusters.values())
+    V = indicator_vector(nodelist, cluster_list)
+    cut = WCut(D, W, D, V)
+    return (Y, cut, clusters) if return_clusters == True else (Y, cut)
